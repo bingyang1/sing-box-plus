@@ -6,6 +6,7 @@ on:
     branches:
       - main-next
       - dev-next
+      - v1.5.5.1
     paths-ignore:
       - '**.md'
       - '.github/**'
@@ -14,6 +15,7 @@ on:
     branches:
       - main-next
       - dev-next
+      - v1.5.5.1
 
 jobs:
   build:
