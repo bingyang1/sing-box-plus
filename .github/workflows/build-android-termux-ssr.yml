@@ -1,0 +1,189 @@
+name: Build Android Termux SSR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version name"
+        required: true
+        default: "1.5.5"
+        type: string
+
+jobs:
+  build-android-termux:
+    name: Build Android Termux (ssr support)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+          fetch-depth: 0
+          
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'  # 使用与1.5.5兼容的Go版本
+          
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25
+          local-cache: true
+          
+      - name: Set environment variables
+        run: |
+          echo "GOOS=android" >> $GITHUB_ENV
+          echo "GOARCH=arm64" >> $GITHUB_ENV
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
+          echo "ANDROID_ABI=arm64-v8a" >> $GITHUB_ENV
+          echo "BUILD_VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+          
+      - name: Set NDK toolchain
+        run: |
+          export NDK_HOME=$ANDROID_NDK_HOME
+          export CC=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang
+          export CXX=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang++
+          echo "CC=$CC" >> $GITHUB_ENV
+          echo "CXX=$CXX" >> $GITHUB_ENV
+          
+      - name: Set build tags with SSR support
+        run: |
+          # 基础标签 + ssr支持
+          TAGS='with_shadowsocksr,with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api'
+          echo "BUILD_TAGS=$TAGS" >> $GITHUB_ENV
+          
+      - name: Build sing-box for Android Termux
+        run: |
+          mkdir -p build/output
+          
+          # 编译命令 - 针对Termux环境优化
+          go build -v -trimpath \
+            -tags "$BUILD_TAGS" \
+            -ldflags "-s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=$BUILD_VERSION" \
+            -o build/output/sing-box \
+            ./cmd/sing-box
+          
+          # 验证二进制文件架构
+          file build/output/sing-box
+          
+      - name: Verify build
+        run: |
+          # 检查文件是否存在
+          if [ ! -f "build/output/sing-box" ]; then
+            echo "Build failed: sing-box binary not found"
+            exit 1
+          fi
+          
+          # 检查文件大小
+          FILE_SIZE=$(stat -c%s "build/output/sing-box")
+          echo "Binary size: $FILE_SIZE bytes"
+          
+          if [ $FILE_SIZE -lt 1000000 ]; then
+            echo "Warning: Binary size is too small, build may be incomplete"
+          fi
+          
+      - name: Package for Termux
+        run: |
+          # 创建分发目录
+          DIST_DIR="sing-box-android-termux-ssr-v$BUILD_VERSION"
+          mkdir -p $DIST_DIR
+          
+          # 复制二进制文件
+          cp build/output/sing-box $DIST_DIR/
+          
+          # 创建说明文件
+          cat > $DIST_DIR/README.md << EOF
+          # sing-box for Android Termux (ssr support)
+          
+          ## Version
+          v$BUILD_VERSION
+          
+          ## Features
+          - Built for Android Termux (arm64)
+          - SSR protocol support (with_shadowsocksr)
+          - gvisor, quic, wireguard, utls support
+          - Clash API support
+          
+          ## Installation
+          1. Copy sing-box to your Termux home directory
+          2. Make it executable: chmod +x sing-box
+          3. Move to PATH: mv sing-box ~/../usr/bin/
+          
+          ## Usage
+          ./sing-box run -c config.json
+          
+          ## Notes
+          - This build supports ssr protocol (deprecated in later versions)
+          - For Termux environment only
+          - arm64 architecture only
+          EOF
+          
+          # 创建压缩包
+          zip -r ${DIST_DIR}.zip $DIST_DIR/
+          tar -czf ${DIST_DIR}.tar.gz $DIST_DIR/
+          
+          # 计算校验和
+          sha256sum ${DIST_DIR}.zip > ${DIST_DIR}.zip.sha256
+          sha256sum ${DIST_DIR}.tar.gz > ${DIST_DIR}.tar.gz.sha256
+          
+          # 移动到输出目录
+          mv ${DIST_DIR}* build/output/
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sing-box-android-termux-ssr
+          path: build/output/*
+          retention-days: 30
+          
+      - name: Create GitHub Release
+        id: create-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-termux-ssr-v${{ inputs.version }}
+          name: Android Termux Build (ssr support) v${{ inputs.version }}
+          body: |
+            # sing-box for Android Termux (ssr support)
+            
+            ## Build Information
+            - Version: v${{ inputs.version }}
+            - Architecture: arm64 (Termux)
+            - SSR Protocol: Enabled
+            - Build Time: ${{ github.event.head_commit.timestamp }}
+            
+            ## Included Features
+            - ShadowsocksR (ssr) protocol support
+            - gvisor, quic, wireguard, utls
+            - Clash API compatibility
+            
+            ## Installation
+            ```bash
+            # 在Termux中安装
+            pkg install wget unzip
+            wget https://github.com/${{ github.repository }}/releases/download/android-termux-ssr-v${{ inputs.version }}/sing-box-android-termux-ssr-v${{ inputs.version }}.zip
+            unzip sing-box-android-termux-ssr-v${{ inputs.version }}.zip
+            cd sing-box-android-termux-ssr-v${{ inputs.version }}
+            chmod +x sing-box
+            mv sing-box ~/../usr/bin/
+            ```
+            
+            ## Usage
+            ```bash
+            # 创建配置文件
+            mkdir -p ~/.config/sing-box
+            # 编辑配置文件
+            nano ~/.config/sing-box/config.json
+            # 运行
+            sing-box run -c ~/.config/sing-box/config.json
+            ```
+          files: |
+            build/output/*.zip
+            build/output/*.tar.gz
+            build/output/*.sha256
+          draft: false
+          prerelease: false
